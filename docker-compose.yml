@@ -1,0 +1,141 @@
+version: '3.8'
+
+services:
+  # ==========================================================
+  # 1. MESSAGE BROKER: ZOOKEEPER & KAFKA
+  # ==========================================================
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: lakehouse-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    networks:
+      - lakehouse-net
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: lakehouse-kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    networks:
+      - lakehouse-net
+
+  init-kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: lakehouse-init-kafka
+    depends_on:
+      - kafka
+    entrypoint: [ '/bin/sh', '-c' ]
+    command: |
+      "
+      # Block until Kafka is reachable
+      kafka-topics --bootstrap-server kafka:29092 --list
+      echo -e 'Creating Kafka topic: amazon-products-stream'
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic amazon-products-stream --replication-factor 1 --partitions 3
+      echo -e 'Creating Kafka topic: amazon-products-dlq'
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic amazon-products-dlq --replication-factor 1 --partitions 1
+      echo -e 'Kafka topics successfully initialized!'
+      "
+    networks:
+      - lakehouse-net
+
+  # ==========================================================
+  # 2. OBJECT STORAGE: MINIO (S3 COMPATIBLE)
+  # ==========================================================
+  minio:
+    image: minio/minio:RELEASE.2024-01-18T22-51-28Z
+    container_name: lakehouse-minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: admin
+      MINIO_ROOT_PASSWORD: password123
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    networks:
+      - lakehouse-net
+
+  minio-init:
+    image: minio/mc:latest
+    container_name: lakehouse-minio-init
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      until /usr/bin/mc alias set myminio http://minio:9000 admin password123; do
+        echo 'Waiting for MinIO...'
+        sleep 2
+      done;
+      /usr/bin/mc mb myminio/lakehouse || true;
+      /usr/bin/mc mb myminio/checkpoints || true;
+      /usr/bin/mc mb myminio/warehouse || true;
+      /usr/bin/mc policy set public myminio/lakehouse;
+      echo 'MinIO buckets created successfully';
+      exit 0;
+      "
+    networks:
+      - lakehouse-net
+
+  # ==========================================================
+  # 3. METADATA CATALOG: APACHE ICEBERG REST CATALOG
+  # ==========================================================
+  iceberg-rest:
+    image: tabulario/iceberg-rest:1.5.0
+    container_name: lakehouse-iceberg-rest
+    ports:
+      - "8181:8181"
+    environment:
+      CATALOG_WAREHOUSE: s3://warehouse/
+      CATALOG_IO__IMPL: org.apache.iceberg.aws.s3.S3FileIO
+      CATALOG_S3_ENDPOINT: http://minio:9000
+      CATALOG_S3_PATH__STYLE__ACCESS: "true"
+      AWS_ACCESS_KEY_ID: admin
+      AWS_SECRET_ACCESS_KEY: password123
+      AWS_REGION: us-east-1
+    depends_on:
+      - minio
+      - minio-init
+    networks:
+      - lakehouse-net
+
+  # ==========================================================
+  # 4. DISTRIBUTED SQL SERVING LAYER: TRINO
+  # ==========================================================
+  trino:
+    image: trinodb/trino:438
+    container_name: lakehouse-trino
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./serving/trino_etc/catalog:/etc/trino/catalog
+      - ./serving/trino_etc/config.properties:/etc/trino/config.properties
+      - ./serving/trino_etc/jvm.config:/etc/trino/jvm.config
+    depends_on:
+      - iceberg-rest
+      - minio
+    networks:
+      - lakehouse-net
+
+networks:
+  lakehouse-net:
+    driver: bridge
+
+volumes:
+  minio_data:
+

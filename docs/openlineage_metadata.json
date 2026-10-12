@@ -1,0 +1,40 @@
+{
+  "eventType": "COMPLETE",
+  "eventTime": "2026-10-12T15:57:47.809255+00:00",
+  "run": {
+    "runId": "spark-lakehouse-stream-job-run-001",
+    "facets": {
+      "nominalTime": {
+        "nominalStartTime": "2026-10-12T15:57:47.809255+00:00"
+      }
+    }
+  },
+  "job": {
+    "namespace": "lakehouse_streaming_engine",
+    "name": "pyspark_kafka_to_iceberg_pipeline"
+  },
+  "inputs": [
+    {
+      "namespace": "kafka://localhost:9092",
+      "name": "amazon-products-stream"
+    }
+  ],
+  "outputs": [
+    {
+      "namespace": "iceberg://lakehouse.db",
+      "name": "bronze_raw_events"
+    },
+    {
+      "namespace": "iceberg://lakehouse.db",
+      "name": "silver_validated_products"
+    },
+    {
+      "namespace": "iceberg://lakehouse.db",
+      "name": "gold_warehouse_products"
+    },
+    {
+      "namespace": "iceberg://lakehouse.db",
+      "name": "dlq_rejected_records"
+    }
+  ]
+}
